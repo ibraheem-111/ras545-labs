@@ -24,13 +24,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="yolov8n.pt",
+        default="yolov8s.pt",
         help="Path to YOLOv8 model weights (e.g., yolov8n.pt).",
     )
     parser.add_argument(
         "--port",
         type=str,
-        default="/dev/ttyACM1",
+        default="/dev/ttyACM0",
         help="Serial port for Dobot (e.g., /dev/ttyACM0 or /dev/ttyUSB0).",
     )
     parser.add_argument(
@@ -51,17 +51,19 @@ def parse_args() -> argparse.Namespace:
 HOME: Tuple[float, float, float, float] = (233.1162, -1.3118, 150.7647, -0.3224)
 
 # Fixed position where cardboard pieces with object pictures are stacked
-CARDBOARD_STACK: Tuple[float, float, float, float] = (297.28350830078125, 51.12328338623047, -45.1676025390625, 9.757606506347656)
+CARDBOARD_STACK: Tuple[float, float, float, float] = (258.72027587890625, 78.253543853759766, -47.58301544189453, 12.689126968383789)
+
+INTERMEDIATE = (178.2554931640625, 45.18132019042969, 60.5149040222168, 14.222879409790039)
 
 # Two pallets for different object categories
-PALLET_A: Tuple[float, float, float, float] = (254.5684814453125, -46.615028381347656, -21.938823699951172, -10.376693725585938)  # Food items
-PALLET_B: Tuple[float, float, float, float] = (352, -46.615028381347656, -21.938823699951172, -10.376693725585938)  # Vehicle items
+PALLET_A: Tuple[float, float, float, float] = (212.3121795654297, -42.84002685546875, -48.86866760253906, 15.448369979858398) # Food items
+PALLET_B: Tuple[float, float, float, float] = (310.1119384765625, -43.242740631103516, -47.53764343261719, -8.280889511108398) # Vehicle items
 
 # Z heights for suction
-SAFE_Z: float = -20.0  # Safe height above objects
-Z_SUCK_START: float = -45.0  # Starting suction height
+SAFE_Z: float = 10.0  # Safe height above objects
+Z_SUCK_START: float = -47.0  # Starting suction height
 Z_SUCK_INCREMENT: float = -3  # How much to lower each attempt
-MAX_Z_SUCK: float = -55.0  # Maximum depth to try
+MAX_Z_SUCK: float = -65.0  # Maximum depth to try
 
 
 # Category mapping from YOLO labels to pallets
@@ -89,10 +91,13 @@ def home(device: pydobot.Dobot) -> None:
     device.home()
 
 def intermediate(device):
-    move_linear(device, *CARDBOARD_STACK)
+    x, y, _, r = CARDBOARD_STACK
+
+    # move_linear(device, *INTERMEDIATE)
+    move_linear(device, x-50, y, SAFE_Z, r)
 
 
-def detect_object_category(model: YOLO, frame) -> Optional[str]:
+def detect_object_category(model: YOLO, frame, show, prev_t) -> Optional[str]:
     """
     Run YOLO and return the category (A or B) of the detection closest to image center.
     Returns None if no valid detections.
@@ -101,11 +106,40 @@ def detect_object_category(model: YOLO, frame) -> Optional[str]:
     r = results[0]
     if r.boxes is None or len(r.boxes) == 0:
         return None
+    if show:
+        if r.boxes is not None and len(r.boxes) > 0:
+
+            xyxy = r.boxes.xyxy.cpu().numpy()
+
+            conf = r.boxes.conf.cpu().numpy()
+            cls  = r.boxes.cls.cpu().numpy().astype(int)
+            names = r.names  
+
+            for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+                x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                w, h = x2 - x1, y2 - y1
+                cx, cy = x1 + w // 2, y1 + h // 2  
+                label = f"{names[k]} {c:.2f}"
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
+                cv2.putText(frame, label, (x1, max(0, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                
+        now = time.time()
+        fps = 1.0 / (now - prev_t)
+        prev_t = now
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        cv2.imshow('Camera Stream + YOLO', frame)
 
     xyxy = r.boxes.xyxy.cpu().numpy()
     conf = r.boxes.conf.cpu().numpy()
     cls = r.boxes.cls.cpu().numpy().astype(int)
     names = r.names
+    print(names)
 
     h, w = frame.shape[:2]
     cx_img, cy_img = w / 2.0, h / 2.0
@@ -125,6 +159,7 @@ def detect_object_category(model: YOLO, frame) -> Optional[str]:
 
     label_idx = cls[best_idx]
     label_name = names[label_idx].lower()
+    print("label name: ", label_name)
     
     if label_name in FOOD_LABELS:
         return "A"
@@ -152,8 +187,8 @@ def pick_from_stack(device: pydobot.Dobot, model: YOLO, cap) -> bool:
         print("Cannot read frame for initial detection")
         return False
     
-    initial_category = detect_object_category(model, frame)
-    print(f"Initial category before pick: {initial_category}")
+    # initial_category = detect_object_category(model, frame)
+    # print(f"Initial category before pick: {initial_category}")
     
     global current_z
     while current_z >= MAX_Z_SUCK:
@@ -171,12 +206,12 @@ def pick_from_stack(device: pydobot.Dobot, model: YOLO, cap) -> bool:
         move_linear(device, x, y, SAFE_Z, r)
         time.sleep(1)  # Wait for movement to complete
         
-        # Check if we successfully picked up the object by detecting again
-        ret, frame = cap.read()
-        if not ret:
-            print("Cannot read frame for success check")
-            device.suck(False)
-            return False
+        # # Check if we successfully picked up the object by detecting again
+        # ret, frame = cap.read()
+        # if not ret:
+        #     print("Cannot read frame for success check")
+        #     device.suck(False)
+        #     return False
             
         # new_category = detect_object_category(model, frame)
         # print(f"Category after pick attempt: {new_category}")
@@ -214,8 +249,8 @@ def place_in_pallet(device: pydobot.Dobot, category: str) -> None:
     # Move to pallet location
     move_linear(device, tx, ty, SAFE_Z, tr)
     time.sleep(1)  # Wait for movement to complete
-    move_linear(device, tx, ty, tz, tr)
-    time.sleep(1)  # Wait for movement to complete
+    # move_linear(device, tx, ty, tz, tr)
+    # time.sleep(1)  # Wait for movement to complete
     
     # Release suction
     device.suck(False)
@@ -242,9 +277,10 @@ def run(args: argparse.Namespace) -> None:
     device = connect_robot(args.port)
     home(device)
 
+    intermediate(device)
+
     prev_t = time.time()
     cycles_run = 0
-    win_name = "Palletizing View"
 
     try:
         while True:
@@ -252,26 +288,14 @@ def run(args: argparse.Namespace) -> None:
             if not ret:
                 print("Can't receive frame. Exiting...")
                 break
-
+            
+            time.sleep(1)
             # Detect object category
-            category = detect_object_category(model, frame)
+            category = detect_object_category(model, frame, args.show, prev_t)
             
             # Add debugging to see what's being detected
             if category is not None:
                 print(f"DEBUG: Detected category {category}")
-
-            if args.show:
-                # Show overlay information
-                now = time.time()
-                fps = 1.0 / max(1e-6, (now - prev_t))
-                prev_t = now
-                h, w = frame.shape[:2]
-                cv2.circle(frame, (w // 2, h // 2), 8, (0, 255, 255), 2)
-                
-                category_text = f"Category: {category or 'None'}"
-                cv2.putText(frame, category_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.imshow(win_name, frame)
 
             # If a valid category is detected, perform pick-and-place
             if category is not None:
@@ -285,10 +309,7 @@ def run(args: argparse.Namespace) -> None:
                 intermediate(device)
                 cycles_run += 1
                 print(f"Completed cycle {cycles_run}")
-                # else:
-                #     print("Failed to pick up object, skipping this cycle")
-                #     home(device)
-
+            
                 if args.loop > 0 and cycles_run >= args.loop:
                     print("Completed requested number of cycles. Exiting.")
                     break
