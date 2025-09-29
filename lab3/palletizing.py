@@ -236,6 +236,7 @@ def detect_object_category(model: YOLO, frame, show, prev_t) -> Tuple[Optional[s
         return "B", prev_t
     else:
         return None, prev_t
+        
 # Try suction at different Z heights
 current_z = Z_SUCK_START
 
@@ -271,32 +272,57 @@ def pick_from_stack(device: pydobot.Dobot, model: YOLO, cap) -> bool:
         move_linear(device, x, y, SAFE_Z, r)
         time.sleep(1)  # Wait for movement to complete
         
-        # # Check if we successfully picked up the object by detecting again
-        # ret, frame = cap.read()
-        # if not ret:
-        #     print("Cannot read frame for success check")
-        #     device.suck(False)
-        #     return False
-            
-        # new_category = detect_object_category(model, frame)
-        # print(f"Category after pick attempt: {new_category}")
-        
-        # Success if: no object detected OR different object detected
-        # if new_category != initial_category:
-        # print(f"Successfully picked up object at Z = {current_z} (category changed from {initial_category} to {new_category})")
         print(current_z)
         current_z = current_z + Z_SUCK_INCREMENT
         return True
-        # else:
-        #     print(f"Pick failed at Z = {current_z} (same category still detected)")
-        #     # Release suction and try lower Z
-        #     device.suck(False)
-        #     current_z += Z_SUCK_INCREMENT  # Move to next Z level
-        #     time.sleep(0.5)
+        
     
     print("Failed to pick up object after all attempts")
     device.suck(False)
     return False
+
+def display_video(cap, model):
+    prev_t = time.time()
+    win_name = 'Camera Stream + YOLO'
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Can't receive frame. Exiting...")
+            break
+
+        results = model(frame, verbose=False)  
+        r = results[0]
+
+        if r.boxes is not None and len(r.boxes) > 0:
+
+            xyxy = r.boxes.xyxy.cpu().numpy()
+
+            conf = r.boxes.conf.cpu().numpy()
+            cls  = r.boxes.cls.cpu().numpy().astype(int)
+            names = r.names  
+
+            for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+                x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                w, h = x2 - x1, y2 - y1
+                cx, cy = x1 + w // 2, y1 + h // 2  
+                label = f"{names[k]} {c:.2f}"
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
+                cv2.putText(frame, label, (x1, max(0, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                
+        now = time.time()
+        fps = 1.0 / (now - prev_t)
+        prev_t = now
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        cv2.imshow(win_name, frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 
 def place_in_pallet(device: pydobot.Dobot, category: str) -> None:
@@ -346,6 +372,8 @@ def run(args: argparse.Namespace) -> None:
 
     # Load model
     model = YOLO(args.model)
+
+    threading.Thread(target=display_video, args=(cap, model))
 
     # Connect robot
     device = connect_robot(args.port)
