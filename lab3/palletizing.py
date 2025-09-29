@@ -3,6 +3,7 @@ import traceback
 import sys
 import time
 from typing import Optional, Tuple
+import threading
 
 import cv2
 from ultralytics import YOLO
@@ -24,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="yolov8s.pt",
+        default="yolov8n.pt",
         help="Path to YOLOv8 model weights (e.g., yolov8n.pt).",
     )
     parser.add_argument(
@@ -42,9 +43,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--show",
         action="store_true",
-        help="Show camera window with overlay and FPS.",
+        default=True,
+        help="Show camera window with overlay and FPS (default: True).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Disable camera window display.",
+    )
+    args = parser.parse_args()
+    
+    # Handle no-show flag
+    if args.no_show:
+        args.show = False
+    
+    return args
 
 
 # Robot poses - UPDATE THESE COORDINATES FOR YOUR SETUP
@@ -90,6 +103,51 @@ def move_linear(device: pydobot.Dobot, x: float, y: float, z: float, r: float, w
 def home(device: pydobot.Dobot) -> None:
     device.home()
 
+def clear_camera_buffer(cap):
+    """Clear the camera buffer to get fresh frames"""
+    # Clear multiple frames to ensure we get the most current one
+    for _ in range(10):  # Clear more frames
+        cap.read()
+
+def get_fresh_frame(cap):
+    """Get the most current frame by clearing buffer and reading fresh frame"""
+    # Clear all buffered frames
+    clear_camera_buffer(cap)
+    
+    # Read the fresh frame
+    ret, frame = cap.read()
+    if not ret:
+        print("Cannot read fresh frame")
+        return None
+    return frame
+
+def get_current_frame_with_validation(cap, max_attempts=5):
+    """Get the most current frame with validation to ensure it's fresh"""
+    for attempt in range(max_attempts):
+        # Clear buffer and get frame
+        clear_camera_buffer(cap)
+        ret, frame = cap.read()
+        
+        if not ret:
+            print(f"Cannot read frame (attempt {attempt + 1})")
+            continue
+            
+        # Small delay to ensure this is a truly fresh frame
+        time.sleep(0.05)
+        
+        # Try to get another frame to verify freshness
+        ret2, frame2 = cap.read()
+        if ret2:
+            # If we got another frame quickly, use the second one (more current)
+            return frame2
+        else:
+            # If no second frame available, use the first one
+            return frame
+    
+    print("Failed to get fresh frame after multiple attempts")
+    return None
+
+
 def intermediate(device):
     x, y, _, r = CARDBOARD_STACK
 
@@ -97,43 +155,54 @@ def intermediate(device):
     move_linear(device, x-50, y, SAFE_Z, r)
 
 
-def detect_object_category(model: YOLO, frame, show, prev_t) -> Optional[str]:
+def detect_object_category(model: YOLO, frame, show, prev_t) -> Tuple[Optional[str], float]:
     """
     Run YOLO and return the category (A or B) of the detection closest to image center.
-    Returns None if no valid detections.
+    Returns (category, updated_prev_t).
     """
     results = model(frame, verbose=False)
     r = results[0]
-    if r.boxes is None or len(r.boxes) == 0:
-        return None
+    
+    # Calculate FPS
+    now = time.time()
+    fps = 1.0 / (now - prev_t)
+    prev_t = now
+    
+    # Always add FPS and crosshair to frame
     if show:
-        if r.boxes is not None and len(r.boxes) > 0:
-
-            xyxy = r.boxes.xyxy.cpu().numpy()
-
-            conf = r.boxes.conf.cpu().numpy()
-            cls  = r.boxes.cls.cpu().numpy().astype(int)
-            names = r.names  
-
-            for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
-                x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-                w, h = x2 - x1, y2 - y1
-                cx, cy = x1 + w // 2, y1 + h // 2  
-                label = f"{names[k]} {c:.2f}"
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
-                cv2.putText(frame, label, (x1, max(0, y1 - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-                
-        now = time.time()
-        fps = 1.0 / (now - prev_t)
-        prev_t = now
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Add center crosshair for better targeting
+        h, w = frame.shape[:2]
+        cv2.circle(frame, (w // 2, h // 2), 8, (0, 255, 255), 2)
+        cv2.line(frame, (w // 2 - 15, h // 2), (w // 2 + 15, h // 2), (0, 255, 255), 1)
+        cv2.line(frame, (w // 2, h // 2 - 15), (w // 2, h // 2 + 15), (0, 255, 255), 1)
+    
+    if r.boxes is None or len(r.boxes) == 0:
+        # Show "no objects" message
+        if show:
+            cv2.putText(frame, "No objects detected", (10, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        return None, prev_t
+    
+    # Add detection boxes when objects are found
+    if show:
+        xyxy = r.boxes.xyxy.cpu().numpy()
+        conf = r.boxes.conf.cpu().numpy()
+        cls  = r.boxes.cls.cpu().numpy().astype(int)
+        names = r.names  
 
-        cv2.imshow('Camera Stream + YOLO', frame)
+        for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+            w, h = x2 - x1, y2 - y1
+            cx, cy = x1 + w // 2, y1 + h // 2  
+            label = f"{names[k]} {c:.2f}"
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
+            cv2.putText(frame, label, (x1, max(0, y1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
     xyxy = r.boxes.xyxy.cpu().numpy()
     conf = r.boxes.conf.cpu().numpy()
@@ -155,18 +224,18 @@ def detect_object_category(model: YOLO, frame, show, prev_t) -> Optional[str]:
             best_idx = i
 
     if best_idx == -1:
-        return None
+        return None, prev_t
 
     label_idx = cls[best_idx]
     label_name = names[label_idx].lower()
     print("label name: ", label_name)
     
     if label_name in FOOD_LABELS:
-        return "A"
+        return "A", prev_t
     elif label_name in VEHICLE_LABELS:
-        return "B"
+        return "B", prev_t
     else:
-        return None
+        return None, prev_t
 # Try suction at different Z heights
 current_z = Z_SUCK_START
 
@@ -181,14 +250,10 @@ def pick_from_stack(device: pydobot.Dobot, model: YOLO, cap) -> bool:
     move_linear(device, x, y, SAFE_Z, r)
     time.sleep(1)  # Wait for movement to complete
     
-    # Get initial detection before picking
-    ret, frame = cap.read()
-    if not ret:
-        print("Cannot read frame for initial detection")
+    # Get fresh frame after robot movement with validation
+    frame = get_current_frame_with_validation(cap)
+    if frame is None:
         return False
-    
-    # initial_category = detect_object_category(model, frame)
-    # print(f"Initial category before pick: {initial_category}")
     
     global current_z
     while current_z >= MAX_Z_SUCK:
@@ -267,8 +332,17 @@ def run(args: argparse.Namespace) -> None:
     if not cap.isOpened():
         raise RuntimeError("Cannot open camera. Check --camera-index and permissions.")
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    # Reduce resolution for better performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+    
+    # Set camera buffer size to reduce lag
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    
+    # Test camera
+    print(f"Camera initialized: {cap.isOpened()}")
+    print(f"Camera resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    print(f"Show video feed: {args.show}")
 
     # Load model
     model = YOLO(args.model)
@@ -284,14 +358,20 @@ def run(args: argparse.Namespace) -> None:
 
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
+            # Get fresh frame for detection with validation
+            frame = get_current_frame_with_validation(cap)
+            if frame is None:
                 print("Can't receive frame. Exiting...")
                 break
             
-            time.sleep(1)
-            # Detect object category
-            category = detect_object_category(model, frame, args.show, prev_t)
+            # Detect object category - NO SLEEP HERE!
+            category, prev_t = detect_object_category(model, frame, args.show, prev_t)
+            
+            # Always display video feed
+            if args.show:
+                # Resize frame for better visibility (320x240 -> 640x480)
+                display_frame = cv2.resize(frame, (640, 480))
+                cv2.imshow('Camera Stream + YOLO', display_frame)
             
             # Add debugging to see what's being detected
             if category is not None:
@@ -301,12 +381,21 @@ def run(args: argparse.Namespace) -> None:
             if category is not None:
                 print(f"Detected category {category} -> executing pick/place")
                 
+                # Clear camera buffer before robot operations to prevent stale frames
+                # This ensures no frames are captured during robot movement
+                clear_camera_buffer(cap)
+                
                 # Pick from stack
                 pick_from_stack(device, model, cap)
-                    # Place in appropriate pallet
+                # Place in appropriate pallet
                 place_in_pallet(device, category)
                 # home(device)
                 intermediate(device)
+                
+                # Clear camera buffer again after robot operations
+                # This ensures next detection uses fresh frames
+                clear_camera_buffer(cap)
+                
                 cycles_run += 1
                 print(f"Completed cycle {cycles_run}")
             
@@ -314,13 +403,12 @@ def run(args: argparse.Namespace) -> None:
                     print("Completed requested number of cycles. Exiting.")
                     break
 
-            # UI + quit handling
-            if args.show:
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-            else:
-                # Without UI, modest sleep to avoid busy-looping the camera
-                time.sleep(0.02)
+            # Always show video feed and handle UI
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            
+            # Small sleep to prevent excessive CPU usage
+            time.sleep(0.01)
     finally:
         # Cleanup
         try:
