@@ -11,7 +11,7 @@ def DH(theta, d, a, alpha):
 def forward_kinematics(theta1, theta2, theta3):
     T01 = DH(theta1, 107.2, 12.5, np.pi/2)
     T12 = DH(theta2, 150, 0, 0)
-    T23 = DH(theta3, 0, 0, 0)
+    T23 = DH(theta3, 76-35, 150+25+40, -np.pi/2)
 
     T03 = T01 @ T12 @ T23
     return T03
