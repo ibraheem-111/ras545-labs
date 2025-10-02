@@ -155,7 +155,7 @@ def intermediate(device):
     move_linear(device, x-50, y, SAFE_Z, r)
 
 
-def detect_object_category(model: YOLO, frame, show, prev_t) -> Tuple[Optional[str], float]:
+def detect_object_category(model: YOLO, frame) -> Tuple[Optional[str], float]:
     """
     Run YOLO and return the category (A or B) of the detection closest to image center.
     Returns (category, updated_prev_t).
@@ -163,79 +163,57 @@ def detect_object_category(model: YOLO, frame, show, prev_t) -> Tuple[Optional[s
     results = model(frame, verbose=False)
     r = results[0]
     
-    # Calculate FPS
-    now = time.time()
-    fps = 1.0 / (now - prev_t)
-    prev_t = now
-    
-    # Always add FPS and crosshair to frame
-    if show:
-        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # Add center crosshair for better targeting
-        h, w = frame.shape[:2]
-        cv2.circle(frame, (w // 2, h // 2), 8, (0, 255, 255), 2)
-        cv2.line(frame, (w // 2 - 15, h // 2), (w // 2 + 15, h // 2), (0, 255, 255), 1)
-        cv2.line(frame, (w // 2, h // 2 - 15), (w // 2, h // 2 + 15), (0, 255, 255), 1)
-    
     if r.boxes is None or len(r.boxes) == 0:
-        # Show "no objects" message
-        if show:
-            cv2.putText(frame, "No objects detected", (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        return None, prev_t
-    
-    # Add detection boxes when objects are found
-    if show:
-        xyxy = r.boxes.xyxy.cpu().numpy()
-        conf = r.boxes.conf.cpu().numpy()
-        cls  = r.boxes.cls.cpu().numpy().astype(int)
-        names = r.names  
-
-        for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
-            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-            w, h = x2 - x1, y2 - y1
-            cx, cy = x1 + w // 2, y1 + h // 2  
-            label = f"{names[k]} {c:.2f}"
-
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
-            cv2.putText(frame, label, (x1, max(0, y1 - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        return None
 
     xyxy = r.boxes.xyxy.cpu().numpy()
     conf = r.boxes.conf.cpu().numpy()
     cls = r.boxes.cls.cpu().numpy().astype(int)
     names = r.names
-    print(names)
 
-    h, w = frame.shape[:2]
-    cx_img, cy_img = w / 2.0, h / 2.0
+    # h, w = frame.shape[:2]
+    # cx_img, cy_img = w / 2.0, h / 2.0
 
-    best_idx = -1
-    best_dist = 1e9
-    for i, ((x1, y1, x2, y2), c, k) in enumerate(zip(xyxy, conf, cls)):
-        mx = (x1 + x2) / 2.0
-        my = (y1 + y2) / 2.0
-        dist = (mx - cx_img) ** 2 + (my - cy_img) ** 2
-        if dist < best_dist or (dist == best_dist and c > conf[best_idx]):
-            best_dist = dist
-            best_idx = i
+    # best_idx = -1
+    # best_dist = 1e9
+    # for i, ((x1, y1, x2, y2), c, k) in enumerate(zip(xyxy, conf, cls)):
+    #     mx = (x1 + x2) / 2.0
+    #     my = (y1 + y2) / 2.0
+    #     dist = (mx - cx_img) ** 2 + (my - cy_img) ** 2
+    #     if dist < best_dist or (dist == best_dist and c > conf[best_idx]):
+    #         best_dist = dist
+    #         best_idx = i
 
-    if best_idx == -1:
-        return None, prev_t
+    print("xyxy: ", xyxy)
+    print("conf: ", conf)
+    print("cls: ", cls)
+    print("names: ", names)
 
-    label_idx = cls[best_idx]
-    label_name = names[label_idx].lower()
+    label_name = None
+    
+    # for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+    #     x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+    #     w, h = x2 - x1, y2 - y1
+    #     cx, cy = x1 + w // 2, y1 + h // 2  
+    #     label_name = f"{names[k]} {c:.2f}"
+    #     print(label_name)
+
+    label_name = names[cls[0]]
+
+
+    # if best_idx == -1:
+    #     return None
+
+    # label_idx = cls[best_idx]
+    # label_name = names[label_idx].lower()
     print("label name: ", label_name)
     
     if label_name in FOOD_LABELS:
-        return "A", prev_t
+        return "A"
     elif label_name in VEHICLE_LABELS:
-        return "B", prev_t
+        return "B"
     else:
-        return None, prev_t
+        return None
         
 # Try suction at different Z heights
 current_z = Z_SUCK_START
@@ -373,7 +351,9 @@ def run(args: argparse.Namespace) -> None:
     # Load model
     model = YOLO(args.model)
 
-    threading.Thread(target=display_video, args=(cap, model))
+    # Start video feed in separate thread
+    if args.show:
+        threading.Thread(target=display_video, args=(cap, model)).start()
 
     # Connect robot
     device = connect_robot(args.port)
@@ -393,13 +373,7 @@ def run(args: argparse.Namespace) -> None:
                 break
             
             # Detect object category - NO SLEEP HERE!
-            category, prev_t = detect_object_category(model, frame, args.show, prev_t)
-            
-            # Always display video feed
-            if args.show:
-                # Resize frame for better visibility (320x240 -> 640x480)
-                display_frame = cv2.resize(frame, (640, 480))
-                cv2.imshow('Camera Stream + YOLO', display_frame)
+            category = detect_object_category(model, frame)
             
             # Add debugging to see what's being detected
             if category is not None:
@@ -431,9 +405,9 @@ def run(args: argparse.Namespace) -> None:
                     print("Completed requested number of cycles. Exiting.")
                     break
 
-            # Always show video feed and handle UI
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # # Always show video feed and handle UI
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
             
             # Small sleep to prevent excessive CPU usage
             time.sleep(0.01)
