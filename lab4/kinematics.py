@@ -2,9 +2,26 @@ import numpy as np
 import math
 import sympy as sp
 from sympy import symbols, cos, sin, Matrix, simplify, pi
+from scipy.optimize import fsolve
 import argparse
 import sys
+import datetime
+import signal
+from contextlib import contextmanager
 
+
+@contextmanager
+def timeout(seconds):
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Solver timed out")
+    
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 offset_vector = Matrix([0, 0, -53.5])
 
     
@@ -55,8 +72,8 @@ def solve_forward_kinematics_symbolically():
                   [sin(ta3-ta2), cos(ta3-ta2), 0],
                   [0, 0, 1]])
     
-    P23 = Matrix([[1, 0, 0],
-                  [0, 1, 0],
+    P23 = Matrix([[0, -1, 0],
+                  [1, 0, 0],
                   [0, 0, 1]])
     
     # Combine rotation and pose matrices, then add translation
@@ -227,8 +244,82 @@ def print_symbolic_equations():
         'orientation': orientation_symbolic
     }
 
+def inverse_kinematics_numerical(target_x, target_y, target_z, r=None, initial_guess=None):
+    """
+    Solve inverse kinematics numerically using scipy's fsolve.
+    Much faster than symbolic solving for specific numerical values.
+    
+    Args:
+        target_x, target_y, target_z: Target end-effector position
+        r: Optional parameter (if needed)
+        initial_guess: Initial guess for [theta1, theta2, theta3] in degrees
+                      If None, uses [0, 45, 45] as default
+    
+    Returns:
+        Dictionary with solution angles in degrees
+    """
+    # Robot parameters
+    a1 = 53.5
+    l1 = 150
+    l2 = 150
+    offset_vector = np.array([0, 0, -58.5])
+    
+    # Remove offset to get actual target
+    actual_target = np.array([target_x, target_y, target_z]) - offset_vector
+    target_x_actual, target_y_actual, target_z_actual = actual_target
+    
+    # Define the forward kinematics equations as a function
+    def fk_equations(angles):
+        """
+        Forward kinematics equations that should equal zero at solution.
+        angles: [theta1, theta2, theta3] in radians
+        """
+        theta1, theta2, theta3 = angles
+        
+        # Forward kinematics equations (from your symbolic version)
+        # P_x = 30*(5*sin(θ2) + 5*cos(θ3) + 3)*cos(θ1)
+        # P_y = 30*(5*sin(θ2) + 5*cos(θ3) + 3)*sin(θ1)
+        # P_z = -150.0*sin(θ3) + 150.0*cos(θ2) + 53.5
+        
+        pos_x = 30 * (5*np.sin(theta2) + 5*np.cos(theta3) + 3) * np.cos(theta1)
+        pos_y = 30 * (5*np.sin(theta2) + 5*np.cos(theta3) + 3) * np.sin(theta1)
+        pos_z = -150.0*np.sin(theta3) + 150.0*np.cos(theta2) + 53.5
+        
+        # Return the difference (should be zero at solution)
+        return [
+            pos_x - target_x_actual,
+            pos_y - target_y_actual,
+            pos_z - target_z_actual
+        ]
+    
+    # Set initial guess (in radians)
+    if initial_guess is None:
+        initial_guess = [0, 0, 0]  # Default guess
+    else:
+        initial_guess = [np.deg2rad(angle) for angle in initial_guess]
+    
+    # Solve using fsolve
+    solution_rad = fsolve(fk_equations, initial_guess)
+    
+    # Convert back to degrees
+    solution_deg = np.rad2deg(solution_rad)
+    
+    # Verify the solution
+    residual = fk_equations(solution_rad)
+    error = np.linalg.norm(residual)
+    
+    result = {
+        'theta1': solution_deg[0],
+        'theta2': solution_deg[1],
+        'theta3': solution_deg[2],
+        'error': error,
+        'converged': error < 0.01  # Consider converged if error < 0.01mm
+    }
+    
+    return result
 
-def inverse_kinematics_simple(target_x, target_y, target_z, show_symbolic=True):
+
+def inverse_kinematics_simple(target_x, target_y, target_z, r, show_symbolic=True):
     """
     Solve inverse kinematics analytically using the symbolic forward kinematics equations.
     
@@ -267,132 +358,21 @@ def inverse_kinematics_simple(target_x, target_y, target_z, show_symbolic=True):
         print(f"P_x = {pos_x_symbolic}")
         print(f"P_y = {pos_y_symbolic}")
         print(f"P_z = {pos_z_symbolic}")
-    
-    # Analytical solution based on the kinematics equations
-    
-    solutions = []
-    
-    try:
-        # From position equations, we know:
-        # P_x = 30*(5*sin(θ2) + 5*cos(θ3) + 3)*cos(θ1) = target_x_actual
-        # P_y = 30*(5*sin(θ2) + 5*cos(θ3) + 3)*sin(θ1) = target_y_actual
-        # P_z = -150.0*sin(θ3) + 150.0*cos(θ2) + 53.5 = target_z_actual
-        
-        # Strategy: Use the structure of the equations to solve step by step
-        
-        # Step 1: From x and y equations, we can solve for θ1
-        # If P_x^2 + P_y^2 = [30*(5*sin(θ2) + 5*cos(θ3) + 3)]^2 * (cos^2(θ1) + sin^2(θ1))
-        #                     = [30*(5*sin(θ2) + 5*cos(θ3) + 3)]^2
-        
-        radial_distance_squared = target_x_actual**2 + target_y_actual**2
-        radial_distance = sp.sqrt(radial_distance_squared)
-        
-        if show_symbolic:
-            print(f"\nAnalytical solution:")
-            print(f"Radial distance from robot base: {radial_distance}")
-        
-        # From: 30*(5*sin(θ2) + 5*cos(θ3) + 3) = radial_distance
-        # We get: 5*sin(θ2) + 5*cos(θ3) + 3 = radial_distance/30
-        
-        from sympy import atan2, asin, acos, pi
-        
-        # Solve for θ1 using atan2
-        if target_x_actual != 0 or target_y_actual != 0:
-            theta1_sol = sp.atan2(target_y_actual, target_x_actual)
-        else:
-            theta1_sol = 0  # If at origin, θ1 can be arbitrary
-        
-        # Now solve for θ2 and θ3 from z equation and the radial constraint
-        # From z equation: -150*sin(θ3) + 150*cos(θ2) = target_z_actual - 53.5
-        # From radial: 5*sin(θ2) + 5*cos(θ3) = radial_distance/30 - 3
-        
-        # This gives us two equations:
-        # cos(θ2) - sin(θ3) = (target_z_actual - 53.5)/150
-        # sin(θ2) + cos(θ3) = radial_distance/30 - 3
-        
-        # For now, let's try a numerical approach since the analytical solution is complex
-        
-        if show_symbolic:
-            print(f"θ1 = {theta1_sol} ({theta1_sol*180/pi:.2f}°)")
-        
-        # Try multiple θ2 values and solve for θ3
-        best_solution = None
-        min_error = float('inf')
-        
-        # Search through θ2 values from -π to π with higher resolution
-        import numpy as np
-        theta2_test_values = np.linspace(-np.pi, np.pi, 500)
-        for theta2_test in theta2_test_values:
-            # From the position equations:
-            # 30*(5*sin(θ2) + 5*cos(θ3) + 3) = radial_distance
-            # So: sin(θ2) + cos(θ3) = radial_distance/30/5 - 3/5
-            
-            radial_term = float((radial_distance/30/5 - 3/5).evalf())
-            cos_theta3_target = radial_term - np.sin(theta2_test)
-            
-            # Check if cos(θ3) is in valid range [-1, 1]
-            if -1 <= cos_theta3_target <= 1:
-                theta3_candidates = [np.arccos(cos_theta3_target), -np.arccos(cos_theta3_target)]
-                
-                for theta3_test in theta3_candidates:
-                    # Check if this solution satisfies the z equation
-                    z_calculated = float((-150*np.sin(theta3_test) + 150*np.cos(theta2_test) + 53.5))
-                    z_error = abs(z_calculated - float(target_z_actual.evalf()))
-                    
-                    if z_error < min_error:
-                        min_error = z_error
-                        best_solution = {
-                            'theta1': theta1_sol,
-                            'theta2': theta2_test,
-                            'theta3': theta3_test,
-                            'error': z_error
-                        }
-        
-        if best_solution and best_solution['error'] < 1.0:  # Tolerance of 1mm
-            solution = best_solution
-            theta1_deg = float(solution['theta1'] * 180/pi)
-            theta2_deg = float(solution['theta2'] * 180/pi)
-            theta3_deg = float(solution['theta3'] * 180/pi)
-            
-            if show_symbolic:
-                print(f"Solution found:")
-                print(f"θ1 = {theta1_deg:.2f}°")
-                print(f"θ2 = {theta2_deg:.2f}°")
-                print(f"θ3 = {theta3_deg:.2f}°")
-                print(f"Position error: ~{min_error:.3f} mm")
-            
-            # Verify solution by plugging back into forward kinematics
-            test_result = forward_kinematics_sympy(theta1_val=theta1_deg, theta2_val=theta2_deg, theta3_val=theta3_deg)
-            test_pos = test_result['adjusted_position'].evalf()
-            
-            if show_symbolic:
-                print(f"Verification - calculated position: [{float(test_pos[0]):.1f}, {float(test_pos[1]):.1f}, {float(test_pos[2]):.1f}]")
-                print(f"Target position: [{target_x}, {target_y}, {target_z}]")
-            
-            return {
-                'success': True,
-                'solutions': [solution],
-                'theta1_deg': theta1_deg,
-                'theta2_deg': theta2_deg,
-                'theta3_deg': theta3_deg,
-                'position_error': min_error,
-                'verified_position': test_pos
-            }
-        
-        else:
-            if show_symbolic:
-                print("No suitable solution found!")
-                if best_solution:
-                    print(f"Best attempt had error: {min_error:.3f} mm")
-            
-            return {'success': False, 'reason': 'No solution found within tolerance'}
-    
-    except Exception as e:
-        if show_symbolic:
-            print(f"Error in inverse kinematics: {e}")
-        
-        return {'success': False, 'error': str(e)}
 
+    equations_to_solve = [
+        pos_x_symbolic - target_x_actual,
+        pos_y_symbolic - target_y_actual,  # <-- Corrected from pos_x_symbolic
+        pos_z_symbolic - target_z_actual
+    ]
+
+    # start_time = datetime.now()
+    with timeout(5):
+        solution = sp.solve(equations_to_solve, [theta1, theta2, theta3], dict=True, rational=False);
+    # sol_timme = datetime.now() -start_time
+    # print("Time Taken For Solution: ", sol_timme)
+
+    # print(solution)
+    return solution
 
 
 def run_cli():
@@ -498,14 +478,16 @@ Examples:
         
         # Try symbolic inverse kinematics
         if args.verbose:
-            ik_result = inverse_kinematics_simple(x, y, z, show_symbolic=True)
+            ik_result = inverse_kinematics_simple(x, y, z, r=0)
         else:
-            ik_result = inverse_kinematics_simple(x, y, z, show_symbolic=False)
+            ik_result = inverse_kinematics_numerical(x, y, z, r=0)
         
         print(f"\nResults:")
-        print(f"Inverse kinematics success: {ik_result['success']}")
-        if not ik_result['success']:
-            print(f"Error: {ik_result.get('error', 'No specific error reported')}")
+        # # print(f"Inverse kinematics success: {ik_result['success']}")
+        # if not ik_result['success']:
+        #     print(f"Error: {ik_result.get('error', 'No specific error reported')}")
+        
+        print(ik_result)
         
         return ik_result
 
