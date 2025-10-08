@@ -2,7 +2,7 @@ import pydobot
 import cv2
 from ultralytics import YOLO
 import threading
-from robot import make_grid, draw_x, draw_o, intermediate
+from robot import make_grid, draw_x, draw_o, intermediate, draw_d, draw_win_line
 from constants import Valid_Players, symbol_map, val_map , Human, Robot
 from video import display_video, capture_board_image
 from ai import check_winner, detect_board_state_yolo, get_best_move, find_latest_move
@@ -63,7 +63,7 @@ def find_robot_sym(human_val):
 def get_human_move_func(human_symbol, board):
     input(f"Press Enter after you make your move ({human_symbol})...")
     intermediate(device)
-    time.sleep(1)
+    time.sleep(2)
     image = capture_board_image(cap)
 
     new_board = detect_board_state_yolo(image, model, board)
@@ -71,6 +71,14 @@ def get_human_move_func(human_symbol, board):
     print(new_board)
 
     human_move = find_latest_move(board, new_board)
+
+    while human_move is None:
+        input(f"Press Enter after you make your move ({human_symbol})...")
+        new_board = detect_board_state_yolo(image, model, board)
+
+        print(new_board)
+
+        human_move = find_latest_move(board, new_board)
 
     if val_map[human_move[2]] != human_symbol:
         raise Exception(f"Human move is invalid. Expecting an {human_symbol} as human move")
@@ -112,7 +120,7 @@ def play_game():
 
         input("Press Enter after you make your move (O)...")
         intermediate(device)
-        time.sleep(1)
+        time.sleep(2)
         image = capture_board_image(cap)
 
         new_board = detect_board_state_yolo(image, model, board)
@@ -120,6 +128,14 @@ def play_game():
         print(new_board)
 
         human_move = find_latest_move(board, new_board)
+
+        while human_move is None:
+            input(f"Press Enter after you make your move ({human_symbol})...")
+            new_board = detect_board_state_yolo(image, model, board)
+
+            print(new_board)
+
+            human_move = find_latest_move(board, new_board)
 
         human_symbol = val_map[human_move[2]]
         robot_symbol = val_map[find_robot_sym(human_move[2])]
@@ -135,7 +151,8 @@ def play_game():
     while True:
 
         # Check if human won
-        winner = check_winner(board)
+        winner, win_index, win_type = check_winner(board)
+        
         if winner != 0:
             def find_winner(winner):
                 winner_symbol = val_map[winner]
@@ -146,6 +163,12 @@ def play_game():
                     return "Robot"
                 
             print(f"{find_winner(winner)} wins!")
+            draw_win_line(device, win_type, win_index)
+            break
+        
+        if winner == 3:
+            draw_d(device)
+            print("Draw - Inconclusive")
 
         # Check for draw
         if all(board[i][j] != 0 for i in range(3) for j in range(3)):
@@ -155,13 +178,14 @@ def play_game():
         if prev_move == Robot:
             print("Board State Before Human Move")
             print(board)
-            _, _ = get_human_move_func(human_symbol, board)
+            _, board = get_human_move_func(human_symbol, board)
             prev_move = Human
+            continue
         
         if prev_move == Human:
             # Robot's turn
             print("Robot is thinking...")
-            robot_move = get_best_move(board)
+            robot_move = get_best_move(board, symbol_map[robot_symbol])
             print(robot_move)
             if robot_move:
                 row, col = robot_move
