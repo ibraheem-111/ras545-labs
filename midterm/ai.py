@@ -3,79 +3,160 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+def is_board_full(board):
+    """Check if board is full (no empty cells)"""
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == 0:
+                return False
+    return True
+
 def check_winner(board):
     """Check if there's a winner. Returns 1 for X, 2 for O, 0 for none"""
+    if is_board_full(board):
+        return 3, None, None
     # Check rows
     for row in board:
         if row[0] == row[1] == row[2] != 0:
-            return row[0]
+            return row[0], row, "row"
     
     # Check columns
     for col in range(3):
         if board[0][col] == board[1][col] == board[2][col] != 0:
-            return board[0][col]
+            return board[0][col], col, "col"
     
     # Check diagonals
     if board[0][0] == board[1][1] == board[2][2] != 0:
-        return board[0][0]
+        return board[0][0], None, 'diag_main'
+        return
     if board[0][2] == board[1][1] == board[2][0] != 0:
-        return board[0][2]
+        return board[0][2], None, 'diag_anti'
     
-    return 0
+    return 0, None, None
 
-def minimax(board, depth, is_maximizing):
-    """
-    Recursive minimax algorithm for Tic Tac Toe.
-    board: 3x3 list of lists (0 = empty, 1 = X, 2 = O)
-    depth: recursion depth (for tie-breaking)
-    is_maximizing: True if it's the AI's turn
-    Returns: numeric score (+10 for AI win, -10 for human win, 0 for draw)
-    """
 
+def get_empty_cells(board):
+    """Return list of (row, col) tuples for empty cells"""
+    empty = []
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == 0:
+                empty.append((row, col))
+    return empty
+
+
+def minimax(board, depth, is_maximizing, robot_symbol, human_symbol, alpha=-float('inf'), beta=float('inf')):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    
+    Args:
+        board: 3x3 list (0=empty, 1=X, 2=O)
+        depth: current recursion depth
+        is_maximizing: True if maximizing player (robot), False if minimizing (human)
+        robot_symbol: 1 or 2 (what the robot is playing as)
+        human_symbol: 1 or 2 (what the human is playing as)
+        alpha: alpha value for pruning
+        beta: beta value for pruning
+    
+    Returns:
+        int: score of the position
+    """
+    # Terminal states
     winner = check_winner(board)
-    if winner == 1:
-        return 10 - depth  # Robot (X) wins
-    elif winner == 2:
-        return depth - 10  # Human (O) wins
-    elif all(board[i][j] != 0 for i in range(3) for j in range(3)):
-        return 0  # Draw
-
+    
+    if winner == robot_symbol:  # Robot wins
+        return 10 - depth  # Prefer faster wins
+    elif winner == human_symbol:  # Human wins
+        return depth - 10  # Prefer slower losses
+    elif is_board_full(board):  # Draw
+        return 0
+    
     if is_maximizing:
-        best_score = -float('inf')
-        for i in range(3):
-            for j in range(3):
-                if board[i][j] == 0:
-                    board[i][j] = 1  # Try X
-                    score = minimax(board, depth + 1, False)
-                    board[i][j] = 0
-                    best_score = max(best_score, score)
-        return best_score
+        # Robot's turn (trying to maximize score)
+        max_eval = -float('inf')
+        
+        for (row, col) in get_empty_cells(board):
+            board[row][col] = robot_symbol  # Robot makes move
+            eval_score = minimax(board, depth + 1, False, robot_symbol, human_symbol, alpha, beta)
+            board[row][col] = 0  # Undo move
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            
+            # Alpha-beta pruning
+            if beta <= alpha:
+                break
+        
+        return max_eval
+    
     else:
-        best_score = float('inf')
-        for i in range(3):
-            for j in range(3):
-                if board[i][j] == 0:
-                    board[i][j] = 2  # Try O
-                    score = minimax(board, depth + 1, True)
-                    board[i][j] = 0
-                    best_score = min(best_score, score)
-        return best_score
+        # Human's turn (trying to minimize score)
+        min_eval = float('inf')
+        
+        for (row, col) in get_empty_cells(board):
+            board[row][col] = human_symbol  # Human makes move
+            eval_score = minimax(board, depth + 1, True, robot_symbol, human_symbol, alpha, beta)
+            board[row][col] = 0  # Undo move
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            
+            # Alpha-beta pruning
+            if beta <= alpha:
+                break
+        
+        return min_eval
 
 
-def get_best_move(board):
-    """Returns (row, col) for best move for the AI (X)."""
+def get_best_move(board, robot_symbol):
+    """
+    Find the best move for the robot using minimax.
+    
+    Args:
+        board: 3x3 list (0=empty, 1=X, 2=O)
+        robot_symbol: 1 (X) or 2 (O) - what the robot is playing as
+    
+    Returns:
+        tuple: (row, col) of best move, or None if no moves available
+    """
+    # Determine human symbol (opposite of robot)
+    human_symbol = 2 if robot_symbol == 1 else 1
+    
     best_score = -float('inf')
-    move = None
-    for i in range(3):
-        for j in range(3):
-            if board[i][j] == 0:
-                board[i][j] = 1
-                score = minimax(board, 0, False)
-                board[i][j] = 0
-                if score > best_score:
-                    best_score = score
-                    move = (i, j)
-    return (2- move[0], 2-move[1])
+    best_move = None
+    
+    # Try all empty cells
+    for (row, col) in get_empty_cells(board):
+        # Make move
+        board[row][col] = robot_symbol
+        
+        # Evaluate move
+        score = minimax(board, 0, False, robot_symbol, human_symbol)
+        
+        # Undo move
+        board[row][col] = 0
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+        
+        # Debug output
+        print(f"Move ({row},{col}): score={score}")
+    
+    print(f"Best move: {best_move} with score {best_score}")
+    
+    if best_move is None:
+        raise ValueError("No valid moves available!")
+    
+    return best_move
+
+
+def validate_move(board, row, col):
+    """Check if a move is valid (cell is empty)"""
+    if not (0 <= row < 3 and 0 <= col < 3):
+        return False
+    return board[row][col] == 0
 
 def detect_board_state_yolo(image_path_or_bytes, model, prev_board):
     # --- Step 1: Load image ---
@@ -222,7 +303,8 @@ def find_latest_move(old_board, new_board):
     print("New Moves Detected:")
     print(new_moves)
     if len(new_moves) ==0:
-        raise Exception("No new move detected")
+        print("No new move detected, try again")
+        return None
     if len(new_moves)>1:
         raise Exception("Only one move allowed")
     
