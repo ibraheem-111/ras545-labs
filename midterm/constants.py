@@ -1,4 +1,4 @@
-drawing_height = -33
+drawing_height = -5
 safe_height = 20
 
 # Define grid origin (adjust these to your actual starting coordinates)
@@ -12,3 +12,13 @@ cell_size = grid_size / 3
 Human = 'H'
 Robot = 'R'
 Valid_Players = [Human, Robot]
+
+symbol_map = {
+    'o': 1,
+    'x': 2
+}
+
+val_map = {
+    1: 'o',
+    2: 'x'
+}

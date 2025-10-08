@@ -75,9 +75,9 @@ def get_best_move(board):
                 if score > best_score:
                     best_score = score
                     move = (i, j)
-    return move
+    return (2- move[0], 2-move[1])
 
-def detect_board_state_yolo(image_path_or_bytes, model):
+def detect_board_state_yolo(image_path_or_bytes, model, prev_board):
     # --- Step 1: Load image ---
     if isinstance(image_path_or_bytes, bytes):
         nparr = np.frombuffer(image_path_or_bytes, np.uint8)
@@ -106,39 +106,50 @@ def detect_board_state_yolo(image_path_or_bytes, model):
     # Assume largest contour is the tic-tac-toe board
     largest = max(contours, key=cv2.contourArea)
     gx, gy, gw, gh = cv2.boundingRect(largest)
+    roi = frame[gy:gy+gh, gx:gx+gw]
 
     # --- Step 3: Run YOLO detection ---
-    results = model(frame, verbose=False)[0]
+    results = model(roi, verbose=False, conf=0.6)[0]
     boxes = results.boxes.xyxy.cpu().numpy()
     cls = results.boxes.cls.cpu().numpy().astype(int)
 
     # --- Step 4: Build empty board ---
-    board = [[0 for _ in range(3)] for _ in range(3)]
+    new_board = [[0 for _ in range(3)] for _ in range(3)]
 
     # --- Step 5: Divide grid into cells ---
     cell_w = gw / 3
     cell_h = gh / 3
+
+    occupied = set()
 
     # --- Step 6: Assign detections to cells ---
     for (x1, y1, x2, y2), k in zip(boxes, cls):
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
 
-        # Only count detections inside grid area
-        if not (gx <= cx <= gx + gw and gy <= cy <= gy + gh):
-            continue
-
         # Compute cell indices
-        col = int((cx - gx) // cell_w)
-        row = int((cy - gy) // cell_h)
+        col = int((cx) // cell_w)
+        row = int((cy) // cell_h)
 
         if 0 <= row < 3 and 0 <= col < 3:
-            if k == 0:  # X
-                board[row][col] = 1
-            elif k == 1:  # O
-                board[row][col] = 2
 
-    return board
+            if (row, col) in occupied:
+                continue  # skip duplicate detections
+            occupied.add((row, col))
+
+            if k == 0:  # X
+                new_board[row][col] = 1
+            elif k == 1:  # O
+                new_board[row][col] = 2
+    
+    if prev_board is not None:
+        for i in range(3):
+            for j in range(3):
+                if new_board[i][j] == 0 and prev_board[i][j] != 0:
+                    
+                    new_board[i][j] = prev_board[i][j]
+
+    return new_board
 
 
 
@@ -199,10 +210,20 @@ Return ONLY the 2D list array, no explanation."""
     
     return detected_board
 
-def find_human_move(old_board, new_board):
+def find_latest_move(old_board, new_board):
     """Compare boards to find where human played"""
+    new_moves = []
     for row in range(3):
         for col in range(3):
-            if old_board[row][col] == 0 and new_board[row][col] == 2:
-                return (row, col)
-    return None
+            if old_board[row][col] != new_board[row][col]:
+                val = new_board[row][col]
+                new_moves.append((row, col, val))
+
+    print("New Moves Detected:")
+    print(new_moves)
+    if len(new_moves) ==0:
+        raise Exception("No new move detected")
+    if len(new_moves)>1:
+        raise Exception("Only one move allowed")
+    
+    return new_moves[0]

@@ -38,7 +38,7 @@ def display_video(cap, model):
         # Draw all contours in green
         cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
 
-        # Optionally highlight the largest contour (workspace boundary)
+        # Highlight the largest contour (workspace boundary)
         if contours:
             largest = max(contours, key=cv2.contourArea)
             cv2.drawContours(frame, [largest], -1, (0, 0, 255), 3)
