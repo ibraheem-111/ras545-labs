@@ -4,3 +4,4 @@
 uv.lock
 *.pt
 .env
+**/XO-11/** 
