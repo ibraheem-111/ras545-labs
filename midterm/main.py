@@ -18,12 +18,12 @@ anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 anthropic_client =  anthropic.Anthropic(api_key= anthropic_api_key)
 
 
-device = MockDobot("/dev/ttyACM0")
-# device = pydobot.Dobot("/dev/ttyACM0")
+# device = MockDobot("/dev/ttyACM0")
+device = pydobot.Dobot("/dev/ttyACM1")
     
 device.home()
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(2)
 if not cap.isOpened():
     raise RuntimeError("Cannot open camera. Check --camera-index and permissions.")
 
@@ -47,6 +47,7 @@ move_map = {
 
 def make_move(device, coordinates, symbol):
     move_map[symbol](*coordinates, device)
+    time.sleep(2)
 
 def find_robot_sym(human_val):
     if human_val is None or human_val not in [1, 2]:
@@ -153,7 +154,7 @@ def play_game():
         # Check if human won
         winner, win_index, win_type = check_winner(board)
         
-        if winner != 0:
+        if winner != 0 and winner != 3:
             def find_winner(winner):
                 winner_symbol = val_map[winner]
                 if winner_symbol == human_symbol:
@@ -164,6 +165,7 @@ def play_game():
                 
             print(f"{find_winner(winner)} wins!")
             draw_win_line(device, win_type, win_index)
+            time.sleep(4)
             break
         
         if winner == 3:

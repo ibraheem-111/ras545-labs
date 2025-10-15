@@ -15,9 +15,9 @@ def check_winner(board):
     """Check if there's a winner. Returns 1 for X, 2 for O, 0 for none"""
     
     # Check rows
-    for row in board:
+    for i, row in enumerate(board):
         if row[0] == row[1] == row[2] != 0:
-            return row[0], row, "row"
+            return row[0], i, "row"
     
     # Check columns
     for col in range(3):
@@ -293,6 +293,41 @@ def detect_board_state_yolo(image_path_or_bytes, model, prev_board):
                     new_board[i][j] = prev_board[i][j]
 
     return new_board
+
+def return_workspace_center(image_path_or_bytes):
+    if isinstance(image_path_or_bytes, bytes):
+        nparr = np.frombuffer(image_path_or_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    else:
+        frame = cv2.imread(image_path_or_bytes)
+    if frame is None:
+        raise ValueError("Invalid image input")
+
+    # --- Step 2: Detect grid boundaries ---
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(
+        blur, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        11, 2
+    )
+    kernel = np.ones((3, 3), np.uint8)
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        raise RuntimeError("No grid found")
+
+    # Assume largest contour is the tic-tac-toe board
+    largest = max(contours, key=cv2.contourArea)
+    gx, gy, gw, gh = cv2.boundingRect(largest)
+
+    center_x = gx + gw / 2
+    center_y = gy + gh / 2 
+    return (center_x, center_y, gw, gh)
+
+
 
 
 
