@@ -14,19 +14,16 @@ import time
 
 load_dotenv()
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-use_mock = os.getenv("USE_MOCK")
 
 anthropic_client =  anthropic.Anthropic(api_key= anthropic_api_key)
 
-# if use_mock:
-    # device = MockDobot("/dev/ttyACM0")
-# else:
-#     device = pydobot.Dobot("/dev/ttyACM0")
-device = pydobot.Dobot("/dev/ttyACM0")
+
+device = MockDobot("/dev/ttyACM0")
+# device = pydobot.Dobot("/dev/ttyACM0")
     
 device.home()
 
-cap = cv2.VideoCapture(2)
+cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     raise RuntimeError("Cannot open camera. Check --camera-index and permissions.")
 
@@ -74,6 +71,9 @@ def get_human_move_func(human_symbol, board):
 
     while human_move is None:
         input(f"Press Enter after you make your move ({human_symbol})...")
+        intermediate(device)
+        time.sleep(2)
+        image = capture_board_image(cap)
         new_board = detect_board_state_yolo(image, model, board)
 
         print(new_board)

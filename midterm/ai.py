@@ -13,8 +13,7 @@ def is_board_full(board):
 
 def check_winner(board):
     """Check if there's a winner. Returns 1 for X, 2 for O, 0 for none"""
-    if is_board_full(board):
-        return 3, None, None
+    
     # Check rows
     for row in board:
         if row[0] == row[1] == row[2] != 0:
@@ -32,6 +31,9 @@ def check_winner(board):
     if board[0][2] == board[1][1] == board[2][0] != 0:
         return board[0][2], None, 'diag_anti'
     
+    if is_board_full(board):
+        return 3, None, None
+    
     return 0, None, None
 
 
@@ -45,7 +47,71 @@ def get_empty_cells(board):
     return empty
 
 
-def minimax(board, depth, is_maximizing, robot_symbol, human_symbol, alpha=-float('inf'), beta=float('inf')):
+# def minimax(board, depth, is_maximizing, robot_symbol, human_symbol, alpha=-float('inf'), beta=float('inf')):
+#     """
+#     Minimax algorithm with alpha-beta pruning.
+    
+#     Args:
+#         board: 3x3 list (0=empty, 1=X, 2=O)
+#         depth: current recursion depth
+#         is_maximizing: True if maximizing player (robot), False if minimizing (human)
+#         robot_symbol: 1 or 2 (what the robot is playing as)
+#         human_symbol: 1 or 2 (what the human is playing as)
+#         alpha: alpha value for pruning
+#         beta: beta value for pruning
+    
+#     Returns:
+#         int: score of the position
+#     """
+#     # Terminal states
+#     winner, _, _ = check_winner(board)
+
+#     print(f"Depth {depth}, Winner: {winner}, Board: {board}")
+    
+#     if winner == robot_symbol:  # Robot wins
+#         return 10 - depth  # Prefer faster wins
+#     elif winner == human_symbol:  # Human wins
+#         return depth - 10  # Prefer slower losses
+#     elif winner== 3:  # Draw
+#         return 0
+    
+#     if is_maximizing:
+#         # Robot's turn (trying to maximize score)
+#         max_eval = -float('inf')
+        
+#         for (row, col) in get_empty_cells(board):
+#             board[row][col] = robot_symbol  # Robot makes move
+#             eval_score = minimax(board, depth + 1, False, robot_symbol, human_symbol, alpha, beta)
+#             board[row][col] = 0  # Undo move
+            
+#             max_eval = max(max_eval, eval_score)
+#             alpha = max(alpha, eval_score)
+            
+#             # Alpha-beta pruning
+#             if beta <= alpha:
+#                 break
+        
+#         return max_eval
+    
+#     else:
+#         # Human's turn (trying to minimize score)
+#         min_eval = float('inf')
+        
+#         for (row, col) in get_empty_cells(board):
+#             board[row][col] = human_symbol  # Human makes move
+#             eval_score = minimax(board, depth + 1, True, robot_symbol, human_symbol, alpha, beta)
+#             board[row][col] = 0  # Undo move
+            
+#             min_eval = min(min_eval, eval_score)
+#             beta = min(beta, eval_score)
+            
+#             # Alpha-beta pruning
+#             if beta <= alpha:
+#                 break
+        
+#         return min_eval
+
+def minimax(board, depth, is_maximizing, robot_symbol, human_symbol):
     """
     Minimax algorithm with alpha-beta pruning.
     
@@ -55,20 +121,23 @@ def minimax(board, depth, is_maximizing, robot_symbol, human_symbol, alpha=-floa
         is_maximizing: True if maximizing player (robot), False if minimizing (human)
         robot_symbol: 1 or 2 (what the robot is playing as)
         human_symbol: 1 or 2 (what the human is playing as)
-        alpha: alpha value for pruning
-        beta: beta value for pruning
-    
     Returns:
         int: score of the position
     """
     # Terminal states
-    winner = check_winner(board)
+    winner, _, _ = check_winner(board)
+
+    # print(f"Depth {depth}, Winner: {winner}, Board: {board}")
     
     if winner == robot_symbol:  # Robot wins
-        return 10 - depth  # Prefer faster wins
+        # print(f"Depth {depth}, Winner: {winner}, Board: {board}")
+        # print("winner found")
+        # return 10 - depth
+        return 10 -depth
     elif winner == human_symbol:  # Human wins
-        return depth - 10  # Prefer slower losses
-    elif is_board_full(board):  # Draw
+        # return depth - 10
+        return depth-10
+    elif winner== 3:  # Draw
         return 0
     
     if is_maximizing:
@@ -77,33 +146,26 @@ def minimax(board, depth, is_maximizing, robot_symbol, human_symbol, alpha=-floa
         
         for (row, col) in get_empty_cells(board):
             board[row][col] = robot_symbol  # Robot makes move
-            eval_score = minimax(board, depth + 1, False, robot_symbol, human_symbol, alpha, beta)
+            eval_score = minimax(board, depth + 1, False, robot_symbol, human_symbol)
             board[row][col] = 0  # Undo move
-            
             max_eval = max(max_eval, eval_score)
-            alpha = max(alpha, eval_score)
-            
-            # Alpha-beta pruning
-            if beta <= alpha:
-                break
         
         return max_eval
     
     else:
-        # Human's turn (trying to minimize score)
         min_eval = float('inf')
+        min_eval_arr = [min_eval]
         
         for (row, col) in get_empty_cells(board):
             board[row][col] = human_symbol  # Human makes move
-            eval_score = minimax(board, depth + 1, True, robot_symbol, human_symbol, alpha, beta)
+            eval_score = minimax(board, depth + 1, True, robot_symbol, human_symbol)
             board[row][col] = 0  # Undo move
             
             min_eval = min(min_eval, eval_score)
-            beta = min(beta, eval_score)
-            
-            # Alpha-beta pruning
-            if beta <= alpha:
-                break
+            min_eval_arr.append((row, col, eval_score))
+
+        # print(f"Min eval arr: {min_eval_arr}")
+
         
         return min_eval
 
