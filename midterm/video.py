@@ -1,12 +1,6 @@
-
-import time
-import cv2
-from ultralytics import YOLO
-
 import time
 import cv2
 import numpy as np
-from ultralytics import YOLO
 
 def display_video(cap, model):
     prev_t = time.time()
