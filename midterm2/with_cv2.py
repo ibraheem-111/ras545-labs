@@ -1,14 +1,13 @@
 import cv2
 import time
-import numpy as np
-from ultralytics import YOLO
 from media_utils import display_video
-from maze_detection import maze_to_grid, detect_maze, visualize_grid
+from maze_detection import MazeDetector
 
-model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
+
+md = MazeDetector()
 
 def display_video(cap):
     prev_t = time.time()
@@ -21,11 +20,11 @@ def display_video(cap):
             print("Can't receive frame. Exiting...")
             break
 
-        new_frame, maze_thresh, maze_region = detect_maze(frame)
+        new_frame, maze_thresh, maze_region = md.detect_maze(frame)
 
-        grid = maze_to_grid(maze_thresh, 50)
+        grid = md.maze_to_grid(maze_thresh, 50)
 
-        visual = visualize_grid(maze_thresh, grid)
+        visual = md.visualize_grid(maze_thresh, grid)
 
         # ===== FPS COUNTER =====
         now = time.time()
