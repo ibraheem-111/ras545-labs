@@ -43,5 +43,5 @@ def display_video(cap):
     cv2.destroyAllWindows()
 
 
-
-display_video(cap)
+if __name__ == "__main__":
+    display_video(cap)
