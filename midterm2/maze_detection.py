@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import copy
 
 class MazeDetector:
     """
@@ -131,84 +132,11 @@ class MazeDetector:
         
         return visual
 
-    def order_points(self, pts):
-        """
-        Order points in clockwise order: top-left, top-right, bottom-right, bottom-left
-        
-        Parameters:
-        -----------
-        pts : numpy array
-            4 corner points
-        
-        Returns:
-        --------
-        ordered : numpy array
-            Points in correct order
-        """
-        rect = np.zeros((4, 2), dtype=np.float32)
-        
-        # Top-left has smallest sum, bottom-right has largest sum
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        
-        # Top-right has smallest diff, bottom-left has largest diff
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        
-        return rect
-
-
     def apply_perspective_correction(self, maze_thresh, contour):
-        """
-        Apply perspective transformation to straighten the maze.
-        
-        Parameters:
-        -----------
-        maze_thresh : numpy array
-            Binary threshold image
-        contour : numpy array
-            Contour points of the maze
-        
-        Returns:
-        --------
-        warped : numpy array
-            Perspective-corrected maze image
-        """
-        # Find the minimum area rectangle (rotated bounding box)
-        rect = cv2.minAreaRect(contour)
-        box = cv2.boxPoints(rect).astype(int)
-        
-        # Get width and height of the rotated rectangle
-        width = int(rect[1][0])
-        height = int(rect[1][1])
-        
-        # Ensure width > height for consistent orientation
-        if width < height:
-            width, height = height, width
-        
-        # Sort corners: top-left, top-right, bottom-right, bottom-left
-        src_pts = order_points(box.astype(np.float32))
-        
-        # Destination points (perfect rectangle)
-        dst_pts = np.array([
-            [0, 0],
-            [width - 1, 0],
-            [width - 1, height - 1],
-            [0, height - 1]
-        ], dtype=np.float32)
-        
-        # Calculate perspective transform matrix
-        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        
-        # Apply perspective transformation
-        warped = cv2.warpPerspective(maze_thresh, M, (width, height))
-        
-        return warped
-
+        pass
 
     def detect_maze(self, frame):
+        plain_frame = copy.deepcopy(frame)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         thresh = cv2.adaptiveThreshold(
@@ -242,14 +170,14 @@ class MazeDetector:
             min_x = min(x, x2) 
             y_max = max(y + h, y2 + h2)
             x_max = max(x + w, x2 + w2)
+            roi = plain_frame[min_y-10:y_max+10, min_x-10:x_max+10]
 
             cv2.rectangle(frame, (min_x, min_y), (x_max, y_max), (255, 0, 0), 2)
             cv2.putText(frame, "Workspace", (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             
-            maze_thresh = closed[min_y:y_max, min_y:x_max]
-
-            maze_warped = self.apply_perspective_correction(maze_thresh, all_maze_points)
-            maze_region = (min_x, min_y, x_max - min_x, y_max - min_y)
+            maze_thresh = closed[min_y:y_max, min_x:x_max]
             
-        return frame, maze_thresh, maze_region
+            maze_region = (min_x, min_y, x_max - min_x, y_max - min_y)
+
+        return frame, maze_thresh, maze_region, roi

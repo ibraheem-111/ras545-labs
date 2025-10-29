@@ -1,26 +1,22 @@
 import cv2
 import time
-from media_utils import display_video
 from maze_detection import MazeDetector
+import copy
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
-
-md = MazeDetector()
-
-def display_video(cap):
+def display_video(cap, md: MazeDetector):
     prev_t = time.time()
+    plain_win = "Camera Stream Only"
     win_name = 'Camera Stream + Maze Detection'
     Grid_win_name = 'Grid Visualization'
 
     while True:
         ret, frame = cap.read()
+        plain_frame = copy.deepcopy(frame)
         if not ret:
             print("Can't receive frame. Exiting...")
             break
 
-        new_frame, maze_thresh, maze_region = md.detect_maze(frame)
+        new_frame, maze_thresh, maze_region, _ = md.detect_maze(frame)
 
         grid = md.maze_to_grid(maze_thresh, 50)
 
@@ -34,6 +30,7 @@ def display_video(cap):
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         # ===== DISPLAY RESULT =====
+        cv2.imshow(plain_win, plain_frame)
         cv2.imshow(win_name, new_frame)
         cv2.imshow(Grid_win_name, visual)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -44,4 +41,11 @@ def display_video(cap):
 
 
 if __name__ == "__main__":
-    display_video(cap)
+
+    cap = cv2.VideoCapture(2)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
+
+    md = MazeDetector()
+
+    display_video(cap, md)
