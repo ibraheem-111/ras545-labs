@@ -1,6 +1,6 @@
 import cv2
 import time
-from maze_detection import MazeDetector
+from maze_detection import MazeDetector, preprocess_maze, warp_from_corners, four_external_corners
 import copy
 
 def display_video(cap, md: MazeDetector):
@@ -12,15 +12,26 @@ def display_video(cap, md: MazeDetector):
     while True:
         ret, frame = cap.read()
         plain_frame = copy.deepcopy(frame)
+
         if not ret:
             print("Can't receive frame. Exiting...")
             break
 
-        new_frame, maze_thresh, maze_region, _ = md.detect_maze(frame)
+        new_frame, maze_thresh, maze_region, roi,corners = md.detect_maze(frame)
+
+
+        if roi is None or roi.size == 0:
+            continue
+
+        processed = preprocess_maze(roi)
+
+        external_corners = four_external_corners(corners)
+
+        warped_maze = warp_from_corners(processed, external_corners, out_size=600)
 
         grid = md.maze_to_grid(maze_thresh, 50)
 
-        visual = md.visualize_grid(maze_thresh, grid)
+        visual = md.visualize_grid(warped_maze, grid)
 
         # ===== FPS COUNTER =====
         now = time.time()
@@ -42,9 +53,11 @@ def display_video(cap, md: MazeDetector):
 
 if __name__ == "__main__":
 
-    cap = cv2.VideoCapture(2)
+    cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
+
+    time.sleep(2.0) 
 
     md = MazeDetector()
 
