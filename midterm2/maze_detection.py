@@ -2,6 +2,74 @@ import cv2
 import numpy as np
 import copy
 
+
+def _normalize_pts(corners):
+    pts = np.asarray(corners, dtype=np.float32)
+    pts = np.squeeze(pts)            # handles Nx1x2, Nx2, 1xNx2, etc.
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError("Expected points shaped like (N,2) or (N,1,2).")
+    return pts
+
+def _order_tl_tr_br_bl(pts4):
+    # Order 4 points as TL, TR, BR, BL
+    s = pts4.sum(axis=1)
+    diff = np.diff(pts4, axis=1).ravel()
+    tl = pts4[np.argmin(s)]
+    br = pts4[np.argmax(s)]
+    tr = pts4[np.argmin(diff)]
+    bl = pts4[np.argmax(diff)]
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
+def four_external_corners(corners):
+    """
+    Select the 4 external corners from any set of 2D points.
+    Returns 4x2 float32 points ordered TL, TR, BR, BL.
+    Strategy:
+      1) Oriented min-area rectangle over all points (robust to rotation)
+      2) If degenerate (rare), fall back to convex hull -> approx to 4
+      3) If still not 4, fall back to axis-aligned bounding box
+    """
+    pts = _normalize_pts(corners)
+
+    # 1) Oriented min-area rect (works even if there are many corners & rotation)
+    if len(pts) >= 3:
+        rect = cv2.minAreaRect(pts)          # (center), (w,h), angle
+        box  = cv2.boxPoints(rect)           # 4x2 float32
+        return _order_tl_tr_br_bl(box)
+
+    # 2) If too few for minAreaRect, try hull+approx (edge case)
+    hull = cv2.convexHull(pts.reshape(-1,1,2))
+    peri = cv2.arcLength(hull, True)
+    approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
+    if len(approx) == 4:
+        return _order_tl_tr_br_bl(approx.reshape(4,2).astype(np.float32))
+
+    # 3) Final fallback: axis-aligned bounding box
+    x, y, w, h = cv2.boundingRect(pts.astype(np.int32))
+    box = np.array([[x, y],
+                    [x+w, y],
+                    [x+w, y+h],
+                    [x, y+h]], dtype=np.float32)
+    return _order_tl_tr_br_bl(box)
+
+def warp_from_corners(src_gray, corners_xy, out_size=600):
+    """
+    src_gray: uint8 grayscale image (same one you passed to isolate_maze_with_reconstruction)
+    corners_xy: 4x2 float32 array in (x,y) order, TL,TR,BR,BL (already ordered by your function)
+    out_size: output square size
+    """
+    dst = np.float32([[0,0],[out_size,0],[out_size,out_size],[0,out_size]])
+    M = cv2.getPerspectiveTransform(corners_xy.astype(np.float32), dst)
+    warped = cv2.warpPerspective(src_gray, M, (out_size, out_size))
+    return warped
+
+def preprocess_maze(frame):
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    frame = cv2.GaussianBlur(frame, (5,5), 1)
+    # frame = cv2.normalize(frame, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+    return frame
+# _, frame = capture_image(cap)
+
 class MazeDetector:
     """
     A class to detect and process mazes from video frames.
@@ -159,7 +227,11 @@ class MazeDetector:
         # Highlight the Maze
         if contours:
             largest = max(contours, key=cv2.contourArea)
+            # print("Largest contour area:", cv2.cornerHarris(largest))
+            corners = self.detect_corners(largest)
             second_largest = sorted(contours, key=cv2.contourArea)[-2] if len(contours) > 1 else None
+            corners2 = self.detect_corners(second_largest) if second_largest is not None else None
+            all_corners = np.vstack([corners, corners2]) if corners2 is not None else corners
             cv2.drawContours(frame, [largest, second_largest], -1, (0, 0, 255), 3)
             x, y, w, h = cv2.boundingRect(largest)
             x2, y2, w2, h2 = cv2.boundingRect(second_largest)
@@ -180,4 +252,12 @@ class MazeDetector:
             
             maze_region = (min_x, min_y, x_max - min_x, y_max - min_y)
 
-        return frame, maze_thresh, maze_region, roi
+        return frame, maze_thresh, maze_region, roi, all_corners
+    
+    def detect_corners(self, contour):
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.02 * peri,
+                                    True)
+        corners = approx.reshape(-1, 2)
+        return corners
+    
