@@ -6,3 +6,6 @@ uv.lock
 .env
 **/XO-11/** 
 *.png
+runs/
+*.npy
+*.zip

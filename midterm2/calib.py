@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from collections import deque
 import time
+from robot import intermediate
 
 # --- Robot imports ---
 from pydobot import Dobot
@@ -91,12 +92,12 @@ def nearest_idx(pts, x, y):
 # ----------------------------
 def main():
     # Robot
-    port = find_dobot_port('/dev/ttyACM1')
+    port = find_dobot_port('/dev/ttyACM0')
     device = Dobot(port)
     print(f"Robot initialized on {port}")
     print("Moving device to home...")
     try:
-        device.home()
+        intermediate.delay()
     except Exception as e:
         print(f"Warning: home() failed or not supported ({e})")
 

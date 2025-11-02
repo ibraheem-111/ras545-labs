@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import copy
-
+from ultralytics import YOLO
 
 def _normalize_pts(corners):
     pts = np.asarray(corners, dtype=np.float32)
@@ -254,6 +254,146 @@ class MazeDetector:
 
         return frame, maze_thresh, maze_region, roi, all_corners
     
+    def detect_maze_yolo_enhanced(self, frame, yolo_model=None, prefer_class="maze", pad_ratio=0.05):
+        """
+        If yolo_model is provided, detect the maze, crop a padded ROI, and process only that ROI.
+        Falls back to full-frame processing if YOLO finds nothing.
+        Returns: frame_annotated, maze_thresh (ROI binary), maze_region (x,y,w,h),
+                roi_bgr, all_corners_full (Nx2 in full-image coords or None)
+        """
+        plain_frame = copy.deepcopy(frame)
+        H, W = frame.shape[:2]
+        maze_thresh = None
+        maze_region = None
+        roi = None
+        all_corners_full = None
+
+        # ---------------------- YOLO stage (ROI) ----------------------
+        xa = ya = xb = yb = None
+        if yolo_model is not None:
+            r = yolo_model(frame, verbose=False)[0]
+            if r.boxes is not None and len(r.boxes) > 0:
+                xyxy = r.boxes.xyxy.cpu().numpy()
+                conf = r.boxes.conf.cpu().numpy()
+                cls  = r.boxes.cls.cpu().numpy().astype(int)
+                names = r.names
+
+                # choose best "maze" box, else highest conf
+                best_idx = None
+                best_conf = -1.0
+                for i, (c, k) in enumerate(zip(conf, cls)):
+                    name = names[k] if isinstance(names, (list, dict)) else str(k)
+                    if name and name.lower() == prefer_class and c > best_conf:
+                        best_conf, best_idx = c, i
+                if best_idx is None:
+                    best_idx = int(np.argmax(conf))
+
+                x1, y1, x2, y2 = map(int, xyxy[best_idx])
+                # pad & clamp
+                pad = int(pad_ratio * max(x2 - x1, y2 - y1))
+                xa = max(0, x1 - pad); ya = max(0, y1 - pad)
+                xb = min(W, x2 + pad); yb = min(H, y2 + pad)
+
+                if xb > xa and yb > ya:
+                    roi = plain_frame[ya:yb, xa:xb].copy()
+                    # draw chosen ROI on overlay
+                    cv2.rectangle(frame, (xa, ya), (xb, yb), (255, 255, 0), 2)
+                    cv2.putText(frame, f"YOLO ROI ({xb-xa}x{yb-ya})", (xa, max(0, ya-6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
+
+        # If we have a YOLO ROI, process only inside it
+        if roi is not None:
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (5, 5), 0)
+            thresh = cv2.adaptiveThreshold(
+                blur, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                11, 2
+            )
+            kernel = np.ones((3, 3), np.uint8)
+            opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+            closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # draw ROI contours on the main frame (offset)
+            for cnt in contours:
+                cnt_full = cnt + np.array([[xa, ya]])  # offset to full-image coords
+                cv2.drawContours(frame, [cnt_full], -1, (0, 255, 0), 2)
+
+            if contours:
+                # pick largest 1–2 contours (inside ROI space)
+                cnts = sorted(contours, key=cv2.contourArea, reverse=True)
+                largest = cnts[0]
+                second = cnts[1] if len(cnts) > 1 else None
+
+                # corners in ROI coords
+                corners1 = self.detect_corners(largest)
+                corners2 = self.detect_corners(second) if second is not None else None
+                all_corners_roi = np.vstack([corners1, corners2]) if corners2 is not None else corners1
+
+                # offset corners to full-image coords (so downstream code can reuse)
+                all_corners_full = all_corners_roi + np.array([xa, ya])
+
+                # pack outputs (threshold is ROI binary)
+                maze_thresh = closed
+                maze_region = (xa, ya, xb - xa, yb - ya)
+
+                return frame, maze_thresh, maze_region, roi, all_corners_full
+
+            # If no ROI contours, fall through to full-frame as a fallback.
+
+        # ---------------------- Fallback: your original full-frame path ----------------------
+        gray = cv2.cvtColor(plain_frame, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        thresh = cv2.adaptiveThreshold(
+            blur, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            11, 2
+        )
+        kernel = np.ones((3, 3), np.uint8)
+        opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+        closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
+
+        if contours:
+            cnts = sorted(contours, key=cv2.contourArea, reverse=True)
+            largest = cnts[0]
+            second  = cnts[1] if len(cnts) > 1 else None
+
+            if second is not None:
+                cv2.drawContours(frame, [largest, second], -1, (0, 0, 255), 3)
+                x, y, w, h   = cv2.boundingRect(largest)
+                x2, y2, w2, h2 = cv2.boundingRect(second)
+                min_y, min_x = min(y, y2), min(x, x2)
+                y_max, x_max = max(y + h, y2 + h2), max(x + w, x2 + w2)
+            else:
+                cv2.drawContours(frame, [largest], -1, (0, 0, 255), 3)
+                x, y, w, h = cv2.boundingRect(largest)
+                min_y, min_x = y, x
+                y_max, x_max = y + h, x + w
+
+            # clamp ROI to image bounds
+            xa = max(0, min_x - 10); ya = max(0, min_y - 10)
+            xb = min(W, x_max + 10); yb = min(H, y_max + 10)
+
+            roi = plain_frame[ya:yb, xa:xb]
+            maze_thresh = closed[ya:yb, xa:xb]
+            maze_region = (xa, ya, xb - xa, yb - ya)
+
+            corners1 = self.detect_corners(largest)
+            corners2 = self.detect_corners(second) if second is not None else None
+            all_corners_full = np.vstack([corners1, corners2]) if corners2 is not None else corners1
+
+            cv2.rectangle(frame, (xa, ya), (xb, yb), (255, 0, 0), 2)
+            cv2.putText(frame, "Workspace", (xa, max(0, ya - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+        return frame, maze_thresh, maze_region, roi, all_corners_full
+    
     def detect_corners(self, contour):
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri,
@@ -261,3 +401,58 @@ class MazeDetector:
         corners = approx.reshape(-1, 2)
         return corners
     
+    def detect_maze_yolo(self, frame, model=YOLO("/home/ibraheem/ras545/runs/detect/maze_detector/weights/best.pt")):
+        results = model(frame, verbose=False)
+        r = results[0]
+
+        H, W = frame.shape[:2]
+        roi = None
+
+        best_box = None
+        best_conf = -1.0
+        prefer_class = "maze"  # change if your class name differs
+
+        if r.boxes is not None and len(r.boxes) > 0:
+            xyxy = r.boxes.xyxy.cpu().numpy()        # (N,4)
+            conf = r.boxes.conf.cpu().numpy()        # (N,)
+            cls  = r.boxes.cls.cpu().numpy().astype(int)  # (N,)
+            names = r.names  # dict or list: id -> name
+
+            for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+                x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                w, h = x2 - x1, y2 - y1
+                cx, cy = x1 + w // 2, y1 + h // 2
+                name = names[k] if isinstance(names, (list, dict)) else str(k)
+                label = f"{name} {c:.2f}"
+
+                # draw detection
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1)
+                cv2.putText(frame, label, (x1, max(0, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+                # track best "maze" box
+                if name.lower() == prefer_class and c > best_conf:
+                    best_conf, best_box = c, (x1, y1, x2, y2)
+
+            # fallback: highest-confidence box of any class if no "maze" class found
+            if best_box is None:
+                idx = int(np.argmax(conf))
+                x1, y1, x2, y2 = map(int, xyxy[idx])
+                best_box = (x1, y1, x2, y2)
+                best_conf = float(conf[idx])
+
+            # pad and clamp ROI to image bounds
+            x1, y1, x2, y2 = best_box
+            pad = int(0.05 * max(x2 - x1, y2 - y1))  # 5% padding
+            xa = max(0, x1 - pad)
+            ya = max(0, y1 - pad)
+            xb = min(W, x2 + pad)
+            yb = min(H, y2 + pad)
+
+            if xb > xa and yb > ya:
+                roi = frame[ya:yb, xa:xb].copy()
+                # optional: show padded ROI box in cyan
+                cv2.rectangle(frame, (xa, ya), (xb, yb), (255, 255, 0), 2)
+
+        return frame, roi
